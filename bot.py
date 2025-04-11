@@ -1,5 +1,7 @@
 import asyncio
 import logging
+import os
+import sys
 from datetime import time
 
 from aiogram import Bot, Dispatcher
@@ -64,51 +66,74 @@ async def send_daily_reminders(bot: Bot, db: Database):
 
 # Функция для настройки и запуска бота
 async def main():
-    # Загрузка конфигурации
-    config = load_config()
+    # Проверка на уже запущенный экземпляр
+    pid_file = 'bot.pid'
+    if os.path.isfile(pid_file):
+        try:
+            with open(pid_file) as f:
+                old_pid = int(f.read())
+            # Проверяем, существует ли процесс с таким PID
+            os.kill(old_pid, 0)
+            logger.error(f"Бот уже запущен с PID {old_pid}")
+            sys.exit(1)
+        except (ProcessLookupError, ValueError):
+            # Если процесс не существует или PID некорректный, удаляем файл
+            os.remove(pid_file)
     
-    # Инициализация базы данных
-    db = Database(config.db)
+    # Записываем PID текущего процесса
+    with open(pid_file, 'w') as f:
+        f.write(str(os.getpid()))
     
-    # Инициализация хранилища состояний
-    storage = MemoryStorage()
-    
-    # Инициализация бота и диспетчера
-    bot = Bot(token=config.tg_bot.token)
-    dp = Dispatcher(storage=storage)
-    
-    # Регистрация middleware
-    dp.update.middleware(DatabaseMiddleware(db))
-    
-    # Регистрация всех маршрутизаторов
-    for router in routers:
-        dp.include_router(router)
-    
-    # Регистрация команд бота
-    await set_commands(bot)
-    
-    # Создание стандартных достижений при первом запуске (можно оптимизировать)
     try:
-        async for session in db.get_session():
-            achievement_service = AchievementService(session)
-            await achievement_service.create_default_achievements()
-    except Exception as e:
-        logger.error(f"Ошибка создания стандартных достижений: {e}")
+        # Загрузка конфигурации
+        config = load_config()
+        
+        # Инициализация базы данных
+        db = Database(config.db)
+        
+        # Инициализация хранилища состояний
+        storage = MemoryStorage()
+        
+        # Инициализация бота и диспетчера
+        bot = Bot(token=config.tg_bot.token)
+        dp = Dispatcher(storage=storage)
+        
+        # Регистрация middleware
+        dp.update.middleware(DatabaseMiddleware(db))
+        
+        # Регистрация всех маршрутизаторов
+        for router in routers:
+            dp.include_router(router)
+        
+        # Регистрация команд бота
+        await set_commands(bot)
+        
+        # Создание стандартных достижений при первом запуске (можно оптимизировать)
+        try:
+            async for session in db.get_session():
+                achievement_service = AchievementService(session)
+                await achievement_service.create_default_achievements()
+        except Exception as e:
+            logger.error(f"Ошибка создания стандартных достижений: {e}")
 
-    # Инициализация и запуск планировщика
-    scheduler = AsyncIOScheduler(timezone="Europe/Moscow") # Укажи свою таймзону
-    # Добавляем задачу на ежедневную отправку напоминаний в 9:00
-    scheduler.add_job(
-        send_daily_reminders,
-        trigger=CronTrigger(hour=9, minute=0),
-        kwargs={'bot': bot, 'db': db}
-    )
-    scheduler.start()
-    logger.info("Планировщик запущен.")
-    
-    # Пропуск обновлений и запуск поллинга
-    await bot.delete_webhook(drop_pending_updates=True)
-    await dp.start_polling(bot)
+        # Инициализация и запуск планировщика
+        scheduler = AsyncIOScheduler(timezone="Europe/Moscow") # Укажи свою таймзону
+        # Добавляем задачу на ежедневную отправку напоминаний в 9:00
+        scheduler.add_job(
+            send_daily_reminders,
+            trigger=CronTrigger(hour=9, minute=0),
+            kwargs={'bot': bot, 'db': db}
+        )
+        scheduler.start()
+        logger.info("Планировщик запущен.")
+        
+        # Пропуск обновлений и запуск поллинга
+        await bot.delete_webhook(drop_pending_updates=True)
+        await dp.start_polling(bot)
+    finally:
+        # Удаляем файл PID при завершении
+        if os.path.isfile(pid_file):
+            os.remove(pid_file)
 
 if __name__ == '__main__':
     try:
