@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import sys
+import signal
 from datetime import time
 
 from aiogram import Bot, Dispatcher
@@ -68,6 +69,14 @@ async def send_daily_reminders(bot: Bot, db: Database):
 
 # Функция для настройки и запуска бота
 async def main():
+    # Очищаем все потенциальные блокировки перед запуском
+    try:
+        if os.path.exists('bot.pid'):
+            os.remove('bot.pid')
+            logger.info("Удален старый PID файл")
+    except Exception as e:
+        logger.error(f"Ошибка при удалении старого PID файла: {e}")
+    
     # Проверка на уже запущенный экземпляр
     pid_file = 'bot.pid'
     if os.path.isfile(pid_file):
@@ -77,14 +86,25 @@ async def main():
             # Проверяем, существует ли процесс с таким PID
             os.kill(old_pid, 0)
             logger.error(f"Бот уже запущен с PID {old_pid}")
-            sys.exit(1)
+            # Попытка завершить старый процесс
+            try:
+                os.kill(old_pid, signal.SIGTERM)
+                logger.info(f"Отправлен сигнал завершения процессу {old_pid}")
+                # Даем процессу время на завершение
+                await asyncio.sleep(5)
+            except ProcessLookupError:
+                logger.info(f"Процесс {old_pid} уже завершен")
+            except Exception as e:
+                logger.error(f"Ошибка при остановке старого процесса: {e}")
         except (ProcessLookupError, ValueError):
             # Если процесс не существует или PID некорректный, удаляем файл
             os.remove(pid_file)
+            logger.info("Удален недействительный PID файл")
     
     # Записываем PID текущего процесса
     with open(pid_file, 'w') as f:
         f.write(str(os.getpid()))
+    logger.info(f"Записан новый PID: {os.getpid()}")
     
     # Загрузка конфигурации
     config = load_config()
