@@ -109,6 +109,14 @@ async def cancel_task_creation(callback: CallbackQuery, state: FSMContext):
 @router.message(TaskForm.waiting_for_title)
 async def process_task_title(message: Message, state: FSMContext):
     """Обработка названия задачи"""
+    if not message.text or not message.text.strip():
+        await message.answer(
+            "❌ <b>Название не может быть пустым</b>\n\n"
+            "Пожалуйста, введите название задачи:",
+            parse_mode="HTML"
+        )
+        return
+        
     if len(message.text) > 200:
         await message.answer(
             "❌ <b>Название слишком длинное</b>\n\n"
@@ -118,7 +126,7 @@ async def process_task_title(message: Message, state: FSMContext):
         return
     
     # Сохраняем название задачи
-    await state.update_data(title=message.text)
+    await state.update_data(title=message.text.strip())
     
     # Создаем клавиатуру с кнопками для пропуска и отмены
     kb = InlineKeyboardBuilder()
