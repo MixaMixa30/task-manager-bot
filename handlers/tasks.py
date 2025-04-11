@@ -8,6 +8,7 @@ from aiogram.fsm.state import StatesGroup, State
 from aiogram.types import Message, CallbackQuery, ReplyKeyboardRemove, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy.ext.asyncio import AsyncSession
+import logging # Добавляем импорт для логирования
 
 from database.models import TaskPriority, TaskStatus, User
 from keyboards.kb import (
@@ -40,7 +41,8 @@ class EditTaskForm(StatesGroup):
 
 
 # Создаем роутер для обработки задач
-router = Router()
+router = Router(name="tasks_router") # Даем имя роутеру для логирования
+logger = logging.getLogger(__name__) # Получаем логгер
 
 
 # Обработчики команд
@@ -80,6 +82,7 @@ async def show_tasks(message: Message, session: AsyncSession):
 @router.message(F.text == "➕ Создать задачу")
 async def create_task_start(message: Message, state: FSMContext):
     """Обработчик кнопки 'Создать задачу'"""
+    logger.info(f"Пользователь {message.from_user.id} нажал '➕ Создать задачу'") # Логируем вход
     kb = InlineKeyboardBuilder()
     kb.add(InlineKeyboardButton(text="❌ Отменить", callback_data="cancel_creation"))
     
@@ -91,11 +94,13 @@ async def create_task_start(message: Message, state: FSMContext):
         reply_markup=kb.as_markup()
     )
     await state.set_state(TaskForm.waiting_for_title)
+    logger.info(f"Установлено состояние 'waiting_for_title' для пользователя {message.from_user.id}") # Логируем установку состояния
 
 
 @router.callback_query(F.data == "cancel_creation")
 async def cancel_task_creation(callback: CallbackQuery, state: FSMContext):
     """Отмена создания задачи"""
+    logger.info(f"Пользователь {callback.from_user.id} отменил создание задачи")
     await state.clear()
     await callback.message.edit_text(
         "❌ Создание задачи отменено. Возвращайся, когда будешь готов!",
@@ -109,6 +114,7 @@ async def cancel_task_creation(callback: CallbackQuery, state: FSMContext):
 @router.message(TaskForm.waiting_for_title)
 async def process_task_title(message: Message, state: FSMContext):
     """Обработка названия задачи"""
+    logger.info(f"Получено название задачи от {message.from_user.id}: {message.text}")
     if not message.text or not message.text.strip():
         await message.answer(
             "❌ <b>Название не может быть пустым</b>\n\n"
@@ -127,6 +133,7 @@ async def process_task_title(message: Message, state: FSMContext):
     
     # Сохраняем название задачи
     await state.update_data(title=message.text.strip())
+    logger.info(f"Название задачи сохранено для {message.from_user.id}")
     
     # Создаем клавиатуру с кнопками для пропуска и отмены
     kb = InlineKeyboardBuilder()
@@ -143,6 +150,7 @@ async def process_task_title(message: Message, state: FSMContext):
         reply_markup=kb.as_markup()
     )
     await state.set_state(TaskForm.waiting_for_description)
+    logger.info(f"Установлено состояние 'waiting_for_description' для пользователя {message.from_user.id}")
 
 
 @router.callback_query(TaskForm.waiting_for_description, F.data == "skip_description")
