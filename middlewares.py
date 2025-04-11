@@ -1,6 +1,6 @@
 from typing import Callable, Dict, Any, Awaitable
 
-from aiogram import BaseMiddleware
+from aiogram import BaseMiddleware, Dispatcher
 from aiogram.types import TelegramObject
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -23,4 +23,9 @@ class DatabaseMiddleware(BaseMiddleware):
         async for session in self.db.get_session():
             data["session"] = session
             # Передаем управление следующему обработчику
-            return await handler(event, data) 
+            return await handler(event, data)
+
+
+def register_all_middlewares(dp: Dispatcher, db: Database):
+    """Регистрирует все middleware"""
+    dp.update.middleware(DatabaseMiddleware(db)) 

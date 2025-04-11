@@ -5,6 +5,7 @@ import sys
 from datetime import time
 
 from aiogram import Bot, Dispatcher
+from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import BotCommand
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -12,14 +13,15 @@ from apscheduler.triggers.cron import CronTrigger
 
 from config import load_config
 from database.db import Database
-from handlers import routers
-from middlewares import DatabaseMiddleware
+from database.models import Base
+from middlewares import register_all_middlewares
+from handlers import register_all_handlers
 from services.achievement_service import AchievementService
 from services.user_service import UserService
 from services.task_service import TaskService
 from utils.helpers import format_task_message # Добавляем импорт для форматирования
 
-# Инициализация логгера
+# Настройка логирования
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
@@ -84,61 +86,58 @@ async def main():
     with open(pid_file, 'w') as f:
         f.write(str(os.getpid()))
     
+    # Загрузка конфигурации
+    config = load_config()
+    
+    # Инициализация базы данных
+    db = Database(config.db)
+    
+    # Инициализация бота и диспетчера
+    bot = Bot(token=config.bot.token, parse_mode=ParseMode.HTML)
+    dp = Dispatcher(storage=MemoryStorage())
+    
+    # Регистрация middleware
+    register_all_middlewares(dp, db)
+    
+    # Регистрация хендлеров
+    register_all_handlers(dp)
+    
+    # Создание таблиц БД
+    async with db.engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    
+    # Регистрация команд бота
+    await set_commands(bot)
+    
+    # Создание стандартных достижений при первом запуске (можно оптимизировать)
     try:
-        # Загрузка конфигурации
-        config = load_config()
-        
-        # Инициализация базы данных
-        db = Database(config.db)
-        
-        # Инициализация хранилища состояний
-        storage = MemoryStorage()
-        
-        # Инициализация бота и диспетчера
-        bot = Bot(token=config.tg_bot.token)
-        dp = Dispatcher(storage=storage)
-        
-        # Регистрация middleware
-        dp.update.middleware(DatabaseMiddleware(db))
-        
-        # Регистрация всех маршрутизаторов
-        for router in routers:
-            dp.include_router(router)
-        
-        # Регистрация команд бота
-        await set_commands(bot)
-        
-        # Создание стандартных достижений при первом запуске (можно оптимизировать)
-        try:
-            async for session in db.get_session():
-                achievement_service = AchievementService(session)
-                await achievement_service.create_default_achievements()
-        except Exception as e:
-            logger.error(f"Ошибка создания стандартных достижений: {e}")
+        async for session in db.get_session():
+            achievement_service = AchievementService(session)
+            await achievement_service.create_default_achievements()
+    except Exception as e:
+        logger.error(f"Ошибка создания стандартных достижений: {e}")
 
-        # Инициализация и запуск планировщика
-        scheduler = AsyncIOScheduler(timezone="Europe/Moscow") # Укажи свою таймзону
-        # Добавляем задачу на ежедневную отправку напоминаний в 9:00
-        scheduler.add_job(
-            send_daily_reminders,
-            trigger=CronTrigger(hour=9, minute=0),
-            kwargs={'bot': bot, 'db': db}
-        )
-        scheduler.start()
-        logger.info("Планировщик запущен.")
-        
-        # Пропуск обновлений и запуск поллинга
-        await bot.delete_webhook(drop_pending_updates=True)
-        await dp.start_polling(bot)
-    finally:
-        # Удаляем файл PID при завершении
-        if os.path.isfile(pid_file):
-            os.remove(pid_file)
+    # Инициализация и запуск планировщика
+    scheduler = AsyncIOScheduler(timezone="Europe/Moscow") # Укажи свою таймзону
+    # Добавляем задачу на ежедневную отправку напоминаний в 9:00
+    scheduler.add_job(
+        send_daily_reminders,
+        trigger=CronTrigger(hour=9, minute=0),
+        kwargs={'bot': bot, 'db': db}
+    )
+    scheduler.start()
+    logger.info("Планировщик запущен.")
+    
+    # Пропуск обновлений и запуск поллинга
+    await bot.delete_webhook(drop_pending_updates=True)
+    await dp.start_polling(bot)
 
 if __name__ == '__main__':
     try:
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
         logger.info("Бот остановлен")
-    except Exception as e:
-        logger.error(f"Непредвиденная ошибка: {e}", exc_info=True) 
+    finally:
+        # Удаляем PID файл при завершении
+        if os.path.exists('bot.pid'):
+            os.remove('bot.pid') 
