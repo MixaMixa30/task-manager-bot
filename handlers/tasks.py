@@ -229,15 +229,50 @@ async def skip_due_date(callback: CallbackQuery, state: FSMContext, session: Asy
 @router.message(TaskForm.waiting_for_due_date)
 async def process_task_due_date(message: Message, state: FSMContext, session: AsyncSession):
     """Обработка даты выполнения задачи"""
+    if message.text and message.text.lower() in ["нет", "no", "отмена", "cancel", "пропустить", "skip", "-"]:
+        # Пользователь решил пропустить указание даты
+        await state.update_data(due_date=None)
+        
+        # Переходим к выбору категории
+        user_id = await get_user_id_by_tg_id(session, message.from_user.id)
+        task_service = TaskService(session)
+        categories = await task_service.get_user_categories(user_id)
+        
+        if categories:
+            await message.answer(
+                "✅ <b>Срок выполнения не указан</b>\n\n"
+                "📂 Выбери категорию для задачи или пропусти этот шаг:",
+                parse_mode="HTML",
+                reply_markup=get_category_selection_keyboard(categories, None, True)
+            )
+            await state.set_state(TaskForm.waiting_for_category)
+        else:
+            # Если у пользователя нет категорий, пропускаем этот шаг
+            await state.update_data(category_id=None)
+            await create_task_final(message, state, session)
+        
+        return
+    
     try:
-        # Пытаемся преобразовать текст в дату
-        due_date = datetime.strptime(message.text, "%d.%m.%Y").date()
+        # Пытаемся преобразовать текст в дату, пробуем несколько форматов
+        due_date = None
+        date_formats = ["%d.%m.%Y", "%d/%m/%Y", "%Y-%m-%d"]
+        
+        for date_format in date_formats:
+            try:
+                due_date = datetime.strptime(message.text, date_format).date()
+                break
+            except ValueError:
+                continue
+        
+        if due_date is None:
+            raise ValueError("Неверный формат даты")
         
         # Проверяем, что дата не в прошлом
         if due_date < date.today():
             await message.answer(
                 "❌ <b>Дата не может быть в прошлом</b>\n\n"
-                "Укажи будущую дату в формате ДД.ММ.ГГГГ:",
+                "Укажи будущую дату в формате ДД.ММ.ГГГГ или пришли 'пропустить', чтобы создать задачу без срока:",
                 parse_mode="HTML"
             )
             return
@@ -263,10 +298,11 @@ async def process_task_due_date(message: Message, state: FSMContext, session: As
             await state.update_data(category_id=None)
             await create_task_final(message, state, session)
         
-    except ValueError:
+    except (ValueError, TypeError):
         await message.answer(
             "❌ <b>Неверный формат даты</b>\n\n"
-            "Пожалуйста, используй формат ДД.ММ.ГГГГ (например, 31.12.2024):",
+            "Пожалуйста, используй формат ДД.ММ.ГГГГ (например, 31.12.2024) "
+            "или пришли 'пропустить', чтобы создать задачу без срока:",
             parse_mode="HTML"
         )
 
@@ -314,12 +350,20 @@ async def create_task_final(message: Message, state: FSMContext, session: AsyncS
     # Очищаем состояние FSM
     await state.clear()
     
-    # Отправляем сообщение об успешном создании задачи с инлайн-кнопками
-    await message.edit_text(
-        f"🎉 <b>Квест создан!</b>\n\n{format_task_message(task)}",
-        parse_mode="HTML",
-        reply_markup=get_task_actions_keyboard(task.id)
-    )
+    try:
+        # Сначала пробуем редактировать сообщение, если это возможно
+        await message.edit_text(
+            f"🎉 <b>Квест создан!</b>\n\n{format_task_message(task)}",
+            parse_mode="HTML",
+            reply_markup=get_task_actions_keyboard(task.id)
+        )
+    except Exception as e:
+        # В случае ошибки отправляем новое сообщение
+        await message.answer(
+            f"🎉 <b>Квест создан!</b>\n\n{format_task_message(task)}",
+            parse_mode="HTML",
+            reply_markup=get_task_actions_keyboard(task.id)
+        )
     
     # Проверяем, есть ли просроченные задачи
     overdue_tasks = await task_service.get_overdue_tasks(user_id)
