@@ -93,7 +93,7 @@ async def main():
     db = Database(config.db)
     
     # Инициализация бота и диспетчера
-    bot = Bot(token=config.bot.token, parse_mode=ParseMode.HTML)
+    bot = Bot(token=config.tg_bot.token, parse_mode=ParseMode.HTML)
     dp = Dispatcher(storage=MemoryStorage())
     
     # Регистрация middleware
