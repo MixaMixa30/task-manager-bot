@@ -166,38 +166,61 @@ async def process_task_description(message: Message, state: FSMContext):
     await state.set_state(TaskForm.waiting_for_priority)
 
 
-@router.callback_query(TaskForm.waiting_for_priority, F.data.startswith("priority:"))
-async def process_task_priority(callback: CallbackQuery, state: FSMContext):
-    """Обработка выбора приоритета задачи"""
-    priority_value = callback.data.split(":")[1]
-    
-    # Получаем названия приоритетов
-    priority_names = {
-        "low": "⚪ Низкий",
-        "medium": "🔵 Средний",
-        "high": "🔴 Высокий",
-        "critical": "⚡ Критический"
+@router.message(TaskForm.waiting_for_priority)
+async def process_task_priority(message: Message, state: FSMContext, session: AsyncSession):
+    """Обработка приоритета задачи"""
+    if not message.text or message.text not in ["1", "2", "3", "4"]:
+        await message.answer(
+            "❌ <b>Неверный приоритет</b>\n\n"
+            "Пожалуйста, выбери приоритет цифрой от 1 до 4:",
+            parse_mode="HTML",
+            reply_markup=get_task_priority_keyboard()
+        )
+        return
+
+    # Преобразуем текст в приоритет
+    priority_map = {
+        "1": TaskPriority.LOW,
+        "2": TaskPriority.MEDIUM,
+        "3": TaskPriority.HIGH,
+        "4": TaskPriority.CRITICAL
     }
-    
-    # Сохраняем приоритет
-    await state.update_data(priority=priority_value)
-    
-    # Создаем клавиатуру с кнопками для пропуска и отмены
-    kb = InlineKeyboardBuilder()
-    kb.row(
-        InlineKeyboardButton(text="⏩ Пропустить", callback_data="skip_due_date"),
-        InlineKeyboardButton(text="❌ Отменить", callback_data="cancel_creation")
-    )
-    
-    await callback.message.edit_text(
-        f"✅ <b>Приоритет установлен:</b> {priority_names.get(priority_value, 'Стандартный')}\n\n"
-        "📅 Укажи дату выполнения в формате ДД.ММ.ГГГГ:\n\n"
-        "<i>Или нажми кнопку «Пропустить», если срок не важен</i>",
-        parse_mode="HTML",
-        reply_markup=kb.as_markup()
-    )
-    await state.set_state(TaskForm.waiting_for_due_date)
-    await callback.answer()
+    priority = priority_map[message.text]
+    await state.update_data(priority=priority)
+
+    # Получаем категории пользователя для выбора
+    user_id = await get_user_id_by_tg_id(session, message.from_user.id)
+    if not user_id:
+        logger.error(f"Не удалось получить user_id для tg_id {message.from_user.id}")
+        await message.answer(
+            "❌ <b>Ошибка при создании задачи</b>\n\n"
+            "Пожалуйста, начните сначала с команды /start",
+            parse_mode="HTML"
+        )
+        return
+
+    task_service = TaskService(session)
+    try:
+        categories = await task_service.get_user_categories(user_id)
+        
+        # Запрашиваем дату выполнения
+        await message.answer(
+            "📅 <b>Когда нужно выполнить квест?</b>\n\n"
+            "Укажи дату в формате ДД.ММ.ГГГГ (например, 31.12.2024)\n"
+            "или отправь 'пропустить', чтобы создать задачу без срока.",
+            parse_mode="HTML"
+        )
+        await state.set_state(TaskForm.waiting_for_due_date)
+        
+    except Exception as e:
+        logger.error(f"Ошибка при получении категорий: {e}")
+        await message.answer(
+            "❌ <b>Ошибка при получении категорий</b>\n\n"
+            "Продолжим без выбора категории.",
+            parse_mode="HTML"
+        )
+        await state.update_data(category_id=None)
+        await state.set_state(TaskForm.waiting_for_due_date)
 
 
 @router.callback_query(TaskForm.waiting_for_due_date, F.data == "skip_due_date")
@@ -329,51 +352,51 @@ async def create_task_final(message: Message, state: FSMContext, session: AsyncS
     
     # Получаем ID пользователя из БД
     user_id = await get_user_id_by_tg_id(session, message.from_user.id)
+    if not user_id:
+        logger.error(f"Не удалось получить user_id для tg_id {message.from_user.id}")
+        await message.answer(
+            "❌ <b>Ошибка при создании задачи</b>\n\n"
+            "Пожалуйста, попробуйте позже или используйте /start для переинициализации.",
+            parse_mode="HTML"
+        )
+        return
     
     # Создаем объект TaskService для работы с задачами
     task_service = TaskService(session)
     
-    # Создаем задачу
-    task = await task_service.create_task(
-        user_id=user_id,
-        title=data["title"],
-        description=data.get("description"),
-        priority=TaskPriority(data["priority"]),
-        due_date=data.get("due_date"),
-        category_id=data.get("category_id")
-    )
-    
-    # Дополнительно получаем категорию для отображения в сообщении
-    if task.category_id:
-        task.category = await task_service.get_category_by_id(task.category_id, user_id)
-    
-    # Очищаем состояние FSM
-    await state.clear()
-    
     try:
-        # Сначала пробуем редактировать сообщение, если это возможно
-        await message.edit_text(
+        # Создаем задачу
+        task = await task_service.create_task(
+            user_id=user_id,
+            title=data["title"],
+            description=data.get("description"),
+            priority=TaskPriority(data["priority"]),
+            due_date=data.get("due_date"),
+            category_id=data.get("category_id")
+        )
+        
+        # Дополнительно получаем категорию для отображения в сообщении
+        if task.category_id:
+            task.category = await task_service.get_category_by_id(task.category_id, user_id)
+        
+        # Очищаем состояние FSM
+        await state.clear()
+        
+        # Отправляем сообщение о создании задачи
+        await message.answer(
             f"🎉 <b>Квест создан!</b>\n\n{format_task_message(task)}",
             parse_mode="HTML",
             reply_markup=get_task_actions_keyboard(task.id)
         )
+        
     except Exception as e:
-        # В случае ошибки отправляем новое сообщение
+        logger.error(f"Ошибка при создании задачи: {e}")
         await message.answer(
-            f"🎉 <b>Квест создан!</b>\n\n{format_task_message(task)}",
-            parse_mode="HTML",
-            reply_markup=get_task_actions_keyboard(task.id)
-        )
-    
-    # Проверяем, есть ли просроченные задачи
-    overdue_tasks = await task_service.get_overdue_tasks(user_id)
-    if overdue_tasks:
-        # Напоминаем о просроченных задачах
-        await message.answer(
-            f"⚠️ <b>У тебя есть просроченные задачи!</b> ({len(overdue_tasks)})\n\n"
-            f"Не забудь выполнить их или обновить сроки.",
+            "❌ <b>Ошибка при создании задачи</b>\n\n"
+            "Пожалуйста, попробуйте еще раз.",
             parse_mode="HTML"
         )
+        return
 
 
 @router.callback_query(F.data.startswith("task:complete:"))
