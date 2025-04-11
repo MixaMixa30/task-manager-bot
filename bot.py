@@ -1,6 +1,9 @@
 import asyncio
 import logging
+import os
 from datetime import time
+import threading
+from aiohttp import web
 
 from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -108,6 +111,26 @@ async def main():
     
     # Пропуск обновлений и запуск поллинга
     await bot.delete_webhook(drop_pending_updates=True)
+    
+    # Запуск веб-сервера для работы с Render
+    port = int(os.environ.get("PORT", 10000))  # Render установит переменную PORT
+    
+    async def handle(request):
+        return web.Response(text="TaskHero bot is running!")
+
+    # Создаем простое веб-приложение
+    app = web.Application()
+    app.router.add_get('/', handle)
+    
+    # Функция для запуска веб-сервера в отдельном потоке
+    def run_web_server():
+        web.run_app(app, host='0.0.0.0', port=port)
+    
+    # Запускаем веб-сервер в отдельном потоке
+    threading.Thread(target=run_web_server, daemon=True).start()
+    logger.info(f"Веб-сервер запущен на порту {port}")
+    
+    # Запускаем бота в режиме поллинга
     await dp.start_polling(bot)
 
 if __name__ == '__main__':
